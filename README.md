@@ -93,9 +93,9 @@ We’re fixing that — with **clarity**, **trust**, and **magician-level UX**.
 
 Want to co-develop, test, or integrate?
 
-📩 pinky@mbtq.dev 
+📩 deafauth@mbtq.dev 
 🌍 https://deafauth.mbtq.dev  
-🔐 Repo: https://github.com/pinkycollie/deafauth  
+🔐 Repo: https://github.com/deafauth  
 
 ---
 
