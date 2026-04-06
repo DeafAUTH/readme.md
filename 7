@@ -1,0 +1,20 @@
+[package]
+name = "fibonrose-wasm"
+version = "0.3.0"
+edition = "2021"
+description = "Fibonacci golden-ratio trust scoring — compiled to WebAssembly"
+authors = ["Pinky · 360 Magicians"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wasm-bindgen = "0.2"
+js-sys = "0.3"
+
+[dev-dependencies]
+wasm-bindgen-test = "0.3"
+
+[profile.release]
+opt-level = "s"    # size-optimized for Wasm
+lto = true
