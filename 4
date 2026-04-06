@@ -1,0 +1,261 @@
+# ============================================================
+
+# setup.ps1 · MBTQ full local dev bootstrap (Windows Admin)
+
+# Run as: powershell -ExecutionPolicy Bypass -File setup.ps1
+
+# Requires: Administrator privileges for service installs
+
+# ============================================================
+
+#Requires -RunAsAdministrator
+
+param(
+[switch]$SkipRust,
+[switch]$SkipDeno,
+[switch]$SkipSupabase,
+[switch]$SkipWorkers,
+[switch]$DevOnly
+)
+
+$ErrorActionPreference = “Stop”
+
+# ── Visual helpers (no audio — Deaf-first) ─────────────────
+
+function Write-Status($msg, $color = “Green”) {
+Write-Host “  ■  $msg” -ForegroundColor $color
+}
+function Write-Step($msg) {
+Write-Host “`n  ▶  $msg” -ForegroundColor Yellow
+}
+function Write-Fail($msg) {
+Write-Host “  ✗  $msg” -ForegroundColor Red
+}
+function Write-Info($msg) {
+Write-Host “  ·  $msg” -ForegroundColor Gray
+}
+
+# ── Header ────────────────────────────────────────────────
+
+Clear-Host
+Write-Host “”
+Write-Host “  ┌─────────────────────────────────────────────────┐” -ForegroundColor Green
+Write-Host “  │  MBTQ DEV BOOTSTRAP  ·  deaf-first  ·  windows  │” -ForegroundColor Green
+Write-Host “  └─────────────────────────────────────────────────┘” -ForegroundColor Green
+Write-Host “”
+
+# ── 1. Rust toolchain ─────────────────────────────────────
+
+if (-not $SkipRust) {
+Write-Step “Rust toolchain”
+
+```
+$rustup = Get-Command rustup -ErrorAction SilentlyContinue
+if (-not $rustup) {
+    Write-Info "Installing Rust via winget..."
+    winget install --id Rustlang.Rustup -e --silent
+    $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
+} else {
+    Write-Info "rustup found — updating..."
+    rustup update stable 2>&1 | Out-Null
+}
+
+# Wasm target
+rustup target add wasm32-unknown-unknown
+Write-Info "Installing wasm-pack..."
+cargo install wasm-pack --quiet
+
+# Build mbtq-cli
+Write-Info "Building mbtq-cli..."
+Push-Location "tools\mbtq-cli"
+cargo build --release --quiet
+Pop-Location
+
+# Add to PATH
+$cliPath = "$PWD\tools\mbtq-cli\target\release"
+[System.Environment]::SetEnvironmentVariable(
+    "PATH",
+    "$env:PATH;$cliPath",
+    [System.EnvironmentVariableTarget]::User
+)
+Write-Status "Rust + mbtq-cli ready"
+```
+
+}
+
+# ── 2. Deno runtime ───────────────────────────────────────
+
+if (-not $SkipDeno) {
+Write-Step “Deno runtime”
+
+```
+$deno = Get-Command deno -ErrorAction SilentlyContinue
+if (-not $deno) {
+    Write-Info "Installing Deno..."
+    irm https://deno.land/install.ps1 | iex
+    $env:PATH = "$env:USERPROFILE\.deno\bin;$env:PATH"
+} else {
+    Write-Info "Deno found — upgrading..."
+    deno upgrade 2>&1 | Out-Null
+}
+
+# Verify
+$denoVer = deno --version 2>&1 | Select-String "deno"
+Write-Status "Deno: $denoVer"
+
+# Cache all workspace deps
+Write-Info "Caching Deno workspace..."
+if (Test-Path "deno.json") {
+    deno cache --unstable-kv services/deafauth/mod.ts
+    deno cache --unstable-kv services/pinksync/mod.ts
+    deno cache --unstable-kv services/fibonrose/mod.ts
+}
+```
+
+}
+
+# ── 3. Node + npm (for Next.js + Vite apps) ────────────────
+
+Write-Step “Node.js + npm”
+
+$node = Get-Command node -ErrorAction SilentlyContinue
+if (-not $node) {
+Write-Info “Installing Node.js LTS via winget…”
+winget install –id OpenJS.NodeJS.LTS -e –silent
+$env:PATH = “C:\Program Files\nodejs;$env:PATH”
+} else {
+$nodeVer = node –version
+Write-Info “Node found: $nodeVer”
+}
+
+# Install frontend deps
+
+Write-Info “Installing frontend dependencies…”
+$frontendPaths = @(
+“frontend”,
+“apps\mbtq-dev”,
+“apps\vr4deaf”,
+“apps\360magicians”,
+“apps\pinkyai”
+)
+foreach ($p in $frontendPaths) {
+if (Test-Path “$p\package.json”) {
+Write-Info “  npm ci → $p”
+Push-Location $p
+npm ci –prefer-offline –silent 2>&1 | Out-Null
+Pop-Location
+}
+}
+Write-Status “Node apps ready”
+
+# ── 4. Wrangler (Cloudflare Workers) ──────────────────────
+
+Write-Step “Wrangler CLI”
+
+$wrangler = Get-Command wrangler -ErrorAction SilentlyContinue
+if (-not $wrangler) {
+npm install -g wrangler –silent
+}
+$wVer = wrangler –version 2>&1
+Write-Status “Wrangler: $wVer”
+
+# ── 5. Supabase CLI ───────────────────────────────────────
+
+if (-not $SkipSupabase) {
+Write-Step “Supabase CLI”
+
+```
+$supa = Get-Command supabase -ErrorAction SilentlyContinue
+if (-not $supa) {
+    Write-Info "Installing Supabase CLI via scoop..."
+    # Try scoop first, fall back to npm
+    $scoop = Get-Command scoop -ErrorAction SilentlyContinue
+    if ($scoop) {
+        scoop install supabase
+    } else {
+        npm install -g supabase --silent
+    }
+}
+
+# Start local Supabase
+Write-Info "Starting local Supabase..."
+if (Test-Path "supabase\config.toml") {
+    supabase start 2>&1 | Out-Null
+    # Run migrations
+    Write-Info "Running migrations..."
+    supabase db push 2>&1 | Out-Null
+}
+Write-Status "Supabase local stack ready"
+```
+
+}
+
+# ── 6. Secrets setup ─────────────────────────────────────
+
+Write-Step “Environment secrets”
+
+$envFiles = @{
+“.env.local” = @”
+
+# MBTQ local dev secrets — do not commit
+
+SUPABASE_URL=http://localhost:54321
+SUPABASE_ANON_KEY=your-local-anon-key
+SUPABASE_SERVICE_KEY=your-local-service-key
+MBTQ_EDGE=false
+DEAFAUTH_SECRET=dev-secret-replace-in-prod
+FIBONROSE_THRESHOLD=0.382
+PINKSYNC_WS_URL=ws://localhost:3003
+VITE_API_URL=http://localhost:3000
+“@
+}
+
+foreach ($f in $envFiles.Keys) {
+if (-not (Test-Path $f)) {
+Write-Info “Creating $f…”
+$envFiles[$f] | Out-File -FilePath $f -Encoding utf8
+} else {
+Write-Info “$f already exists — skipping”
+}
+}
+
+# ── 7. Build Wasm packages ────────────────────────────────
+
+Write-Step “Wasm packages”
+
+$wasmPkgs = @(“packages\fibonrose-wasm”, “packages\a11y-wasm”)
+foreach ($pkg in $wasmPkgs) {
+if (Test-Path “$pkg\Cargo.toml”) {
+Write-Info “Building $pkg…”
+Push-Location $pkg
+wasm-pack build –target web –release –quiet 2>&1 | Out-Null
+Pop-Location
+Write-Status “$pkg built”
+}
+}
+
+# ── 8. mbtq-cli final check ────────────────────────────────
+
+Write-Step “Verify mbtq-cli”
+try {
+$mbtq = & “.\tools\mbtq-cli\target\release\mbtq.exe” list 2>&1
+Write-Status “mbtq list OK — $(($mbtq | Measure-Object -Line).Lines) lines”
+} catch {
+Write-Fail “mbtq-cli not found — run: cargo build –release in tools/mbtq-cli”
+}
+
+# ── Summary ───────────────────────────────────────────────
+
+Write-Host “”
+Write-Host “  ┌─────────────────────────────────────────────────┐” -ForegroundColor Green
+Write-Host “  │  BOOTSTRAP COMPLETE  ·  visual status above     │” -ForegroundColor Green
+Write-Host “  └─────────────────────────────────────────────────┘” -ForegroundColor Green
+Write-Host “”
+Write-Host “  Start dev servers:” -ForegroundColor Cyan
+Write-Host “    mbtq build –parallel          # build all apps” -ForegroundColor White
+Write-Host “    deno task dev (services/*)     # start Deno services” -ForegroundColor White
+Write-Host “    npm run dev (apps/*)           # start frontend apps” -ForegroundColor White
+Write-Host “    supabase studio               # open DB studio” -ForegroundColor White
+Write-Host “”
+Write-Host “  ·  all output visual-only — no audio alerts” -ForegroundColor Gray
+Write-Host “”
