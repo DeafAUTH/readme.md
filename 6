@@ -1,0 +1,44 @@
+[package]
+name = "mbtq-cli"
+version = "0.3.0"
+edition = "2021"
+description = "MBTQ deaf-first build orchestrator — visual-only TUI, no audio gates"
+authors = ["Pinky · 360 Magicians <architect@360magicians.com>"]
+license = "MIT"
+repository = "https://github.com/pinkycollie/DEAF-FIRST-PLATFORM"
+
+[[bin]]
+name = "mbtq"
+path = "src/main.rs"
+
+[dependencies]
+# Terminal color + cursor control (pure Rust, no deps)
+crossterm = "0.27"
+# Parallel execution
+rayon = "1.10"
+# Serialization for build reports
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# Async runtime (optional — for tokio-based parallel builds)
+tokio = { version = "1", features = ["full"], optional = true }
+# CLI argument parsing
+clap = { version = "4", features = ["derive"] }
+
+[features]
+default = []
+async = ["tokio"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+
+[workspace]
+# Workspace root — all MBTQ Rust tools
+members = [
+    ".",
+    "../fibr-token",
+    "../fibonrose-wasm",
+    "../a11y-wasm",
+]
