@@ -1,0 +1,173 @@
+// ============================================================
+// fibonrose-wasm · Trust scoring compiled to WebAssembly
+// Embeds Fibonacci golden-ratio trust engine in JS/Next.js
+// φ = 0.618…, threshold = 0.382 (1 - φ)
+// ============================================================
+
+use wasm_bindgen::prelude::*;
+
+// φ constant — golden ratio
+const PHI: f64 = 0.618_033_988_749_895;
+// Trust gate threshold — 1 - φ
+const THRESHOLD: f64 = 0.381_966_011_250_105;
+
+/// Core Fibonacci trust score with exponential decay
+/// Returns a value in [0.0, 1.0]
+#[wasm_bindgen]
+pub fn fib_trust_score(
+interactions: u32,
+recency_weight: f64,
+violations: u32,
+) -> f64 {
+if interactions == 0 {
+return 0.0;
+}
+
+```
+// Fibonacci sequence convergence toward φ
+let (mut a, mut b) = (1u64, 1u64);
+let n = interactions.min(40) as usize;
+for _ in 0..n {
+    let next = a + b;
+    a = b;
+    b = next;
+}
+let fib_ratio = if a > 0 { b as f64 / a as f64 } else { PHI };
+// Normalize to [0, 1] using φ convergence distance
+let raw = 1.0 - (fib_ratio - PHI).abs();
+
+// Apply recency weight (0.0 = stale, 1.0 = fresh)
+let weighted = raw * recency_weight.clamp(0.0, 1.0);
+
+// Violation decay — Fibonacci-based penalty
+let penalty = if violations > 0 {
+    let decay = (1.0 - PHI).powi(violations as i32);
+    weighted * decay
+} else {
+    weighted
+};
+
+penalty.clamp(0.0, 1.0)
+```
+
+}
+
+/// Returns true if score passes the φ gate (≥ 0.382)
+#[wasm_bindgen]
+pub fn passes_gate(score: f64) -> bool {
+score >= THRESHOLD
+}
+
+/// Returns the gate threshold constant
+#[wasm_bindgen]
+pub fn gate_threshold() -> f64 {
+THRESHOLD
+}
+
+/// Returns φ
+#[wasm_bindgen]
+pub fn phi() -> f64 {
+PHI
+}
+
+/// Compute a trust badge tier from score
+/// Returns: 0=none, 1=bronze, 2=silver, 3=gold, 4=platinum
+#[wasm_bindgen]
+pub fn trust_tier(score: f64) -> u8 {
+match score {
+s if s >= 0.9   => 4, // platinum
+s if s >= 0.764 => 3, // gold
+s if s >= 0.618 => 2, // silver (φ)
+s if s >= 0.382 => 1, // bronze (threshold)
+_               => 0, // denied
+}
+}
+
+/// Tier label for display (Deaf-first: visual badge name)
+#[wasm_bindgen]
+pub fn trust_tier_label(tier: u8) -> String {
+match tier {
+4 => “PLATINUM”.into(),
+3 => “GOLD”.into(),
+2 => “SILVER”.into(),
+1 => “BRONZE”.into(),
+_ => “DENIED”.into(),
+}
+}
+
+/// Batch score multiple actors (returns JSON string)
+#[wasm_bindgen]
+pub fn batch_score(interactions_json: &str) -> String {
+// Minimal JSON parse without serde in wasm
+// Expected input: [[interactions, recency, violations], …]
+// Returns: [score, …]
+let scores: Vec<f64> = interactions_json
+.trim_matches(|c| c == ‘[’ || c == ‘]’)
+.split(”],[”)
+.filter_map(|entry| {
+let nums: Vec<f64> = entry
+.trim_matches(|c| c == ‘[’ || c == ‘]’)
+.split(’,’)
+.filter_map(|s| s.trim().parse().ok())
+.collect();
+if nums.len() == 3 {
+Some(fib_trust_score(nums[0] as u32, nums[1], nums[2] as u32))
+} else {
+None
+}
+})
+.collect();
+
+```
+format!("[{}]", scores.iter().map(|s| format!("{s:.6}")).collect::<Vec<_>>().join(","))
+```
+
+}
+
+// ============================================================
+// Tests (run with: cargo test)
+// ============================================================
+#[cfg(test)]
+mod tests {
+use super::*;
+
+```
+#[test]
+fn test_gate_threshold() {
+    assert!((gate_threshold() - 0.381966).abs() < 1e-4);
+}
+
+#[test]
+fn test_phi() {
+    assert!((phi() - 0.618034).abs() < 1e-4);
+}
+
+#[test]
+fn test_passes_gate() {
+    let score = fib_trust_score(20, 1.0, 0);
+    assert!(passes_gate(score), "Expected score {score} to pass gate");
+}
+
+#[test]
+fn test_violations_decay() {
+    let clean = fib_trust_score(20, 1.0, 0);
+    let violated = fib_trust_score(20, 1.0, 3);
+    assert!(violated < clean, "Violations should reduce score");
+}
+
+#[test]
+fn test_zero_interactions() {
+    assert_eq!(fib_trust_score(0, 1.0, 0), 0.0);
+}
+
+#[test]
+fn test_trust_tiers() {
+    assert_eq!(trust_tier(0.95), 4);
+    assert_eq!(trust_tier(0.80), 3);
+    assert_eq!(trust_tier(0.65), 2);
+    assert_eq!(trust_tier(0.40), 1);
+    assert_eq!(trust_tier(0.20), 0);
+}
+```
+
+}
