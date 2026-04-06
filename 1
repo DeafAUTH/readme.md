@@ -1,0 +1,390 @@
+use std::collections::HashMap;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
+use std::thread;
+use std::time::{Duration, Instant};
+
+// ============================================================
+// mbtq-cli · Deaf-first build orchestrator
+// Manages all 40+ apps in the MBTQ monorepo
+// Visual-only output — no audio gates, no sound alerts
+// ============================================================
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum BuildStatus {
+Pending,
+Running,
+Success(Duration),
+Failed(String),
+Skipped,
+}
+
+#[derive(Debug, Clone)]
+pub struct App {
+pub name: String,
+pub kind: AppKind,
+pub path: String,
+pub deps: Vec<String>,
+pub port: Option<u16>,
+pub tier: u8,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum AppKind {
+DenoService,
+NextJs,
+ViteReact,
+RustBin,
+WasmPkg,
+CloudflareWorker,
+TerraformModule,
+}
+
+impl AppKind {
+pub fn label(&self) -> &str {
+match self {
+AppKind::DenoService => “deno”,
+AppKind::NextJs => “next”,
+AppKind::ViteReact => “vite”,
+AppKind::RustBin => “rust”,
+AppKind::WasmPkg => “wasm”,
+AppKind::CloudflareWorker => “worker”,
+AppKind::TerraformModule => “tf”,
+}
+}
+
+```
+pub fn color_code(&self) -> &str {
+    match self {
+        AppKind::DenoService => "\x1b[32m",       // green
+        AppKind::NextJs => "\x1b[36m",             // cyan
+        AppKind::ViteReact => "\x1b[35m",          // magenta
+        AppKind::RustBin => "\x1b[33m",            // amber
+        AppKind::WasmPkg => "\x1b[34m",            // blue
+        AppKind::CloudflareWorker => "\x1b[37m",   // white
+        AppKind::TerraformModule => "\x1b[90m",    // gray
+    }
+}
+```
+
+}
+
+// ============================================================
+// MBTQ app registry — all services in the monorepo
+// ============================================================
+pub fn registry() -> Vec<App> {
+vec![
+// Core auth-sync-trust mesh
+App { name: “deafauth”.into(),   kind: AppKind::DenoService, path: “services/deafauth”.into(),   deps: vec![],                              port: Some(3002), tier: 0 },
+App { name: “pinksync”.into(),   kind: AppKind::DenoService, path: “services/pinksync”.into(),   deps: vec![“deafauth”.into()],             port: Some(3003), tier: 0 },
+App { name: “fibonrose”.into(),  kind: AppKind::DenoService, path: “services/fibonrose”.into(),  deps: vec![“deafauth”.into()],             port: Some(3004), tier: 0 },
+App { name: “a11y”.into(),       kind: AppKind::DenoService, path: “services/a11y”.into(),       deps: vec![“deafauth”.into()],             port: Some(3005), tier: 0 },
+App { name: “ai-magicians”.into(),kind: AppKind::DenoService,path: “services/ai”.into(),         deps: vec![“deafauth”.into(), “fibonrose”.into()], port: Some(3006), tier: 0 },
+App { name: “dao”.into(),        kind: AppKind::DenoService, path: “services/dao”.into(),        deps: vec![“fibonrose”.into()],            port: Some(3007), tier: 0 },
+App { name: “pinkflow”.into(),   kind: AppKind::DenoService, path: “services/pinkflow”.into(),   deps: vec![“a11y”.into(), “pinksync”.into()], port: Some(3008), tier: 0 },
+
+```
+    // VR4Deaf services
+    App { name: "vr-cases".into(),   kind: AppKind::DenoService, path: "services/vr".into(),         deps: vec!["deafauth".into(), "fibonrose".into()], port: Some(3020), tier: 1 },
+    App { name: "rsa911".into(),     kind: AppKind::DenoService, path: "services/rsa911".into(),     deps: vec!["vr-cases".into()],             port: Some(3021), tier: 1 },
+    App { name: "wioa".into(),       kind: AppKind::DenoService, path: "services/wioa".into(),       deps: vec!["vr-cases".into()],             port: Some(3022), tier: 1 },
+
+    // Frontend apps
+    App { name: "mbtq-dev".into(),   kind: AppKind::ViteReact,   path: "apps/mbtq-dev".into(),      deps: vec!["deafauth".into()],             port: Some(5173), tier: 2 },
+    App { name: "vr4deaf".into(),    kind: AppKind::ViteReact,   path: "apps/vr4deaf".into(),       deps: vec!["vr-cases".into()],             port: Some(5174), tier: 2 },
+    App { name: "360magicians".into(),kind: AppKind::NextJs,     path: "apps/360magicians".into(),   deps: vec!["ai-magicians".into()],         port: Some(3000), tier: 2 },
+    App { name: "pinkyai".into(),    kind: AppKind::NextJs,      path: "apps/pinkyai".into(),        deps: vec!["ai-magicians".into()],         port: Some(3001), tier: 2 },
+    App { name: "mbtqproperties".into(),kind: AppKind::NextJs,   path: "apps/mbtqproperties".into(), deps: vec!["deafauth".into()],             port: Some(3010), tier: 2 },
+
+    // Cloudflare Workers
+    App { name: "gateway-worker".into(),   kind: AppKind::CloudflareWorker, path: "cloudflare/workers/gateway".into(),        deps: vec![], port: None, tier: 0 },
+    App { name: "asl-cdn-worker".into(),   kind: AppKind::CloudflareWorker, path: "cloudflare/workers/asl-cdn".into(),        deps: vec![], port: None, tier: 0 },
+    App { name: "caption-worker".into(),   kind: AppKind::CloudflareWorker, path: "cloudflare/workers/caption-stream".into(), deps: vec![], port: None, tier: 0 },
+
+    // Rust binaries
+    App { name: "mbtq-cli".into(),   kind: AppKind::RustBin,  path: "tools/mbtq-cli".into(),  deps: vec![], port: None, tier: 0 },
+    App { name: "fibr-token".into(), kind: AppKind::RustBin,  path: "tools/fibr-token".into(), deps: vec![], port: None, tier: 0 },
+
+    // Wasm packages
+    App { name: "fibonrose-wasm".into(), kind: AppKind::WasmPkg, path: "packages/fibonrose-wasm".into(), deps: vec![], port: None, tier: 0 },
+    App { name: "a11y-wasm".into(),      kind: AppKind::WasmPkg, path: "packages/a11y-wasm".into(),      deps: vec![], port: None, tier: 0 },
+]
+```
+
+}
+
+// ============================================================
+// Build executor — per AppKind
+// ============================================================
+pub fn build_app(app: &App) -> Result<(), String> {
+let cmds: Vec<(&str, Vec<&str>)> = match app.kind {
+AppKind::DenoService => vec![
+(“deno”, vec![“check”, “mod.ts”]),
+(“deno”, vec![“task”, “build”]),
+],
+AppKind::NextJs => vec![
+(“npm”, vec![“ci”, “–prefer-offline”]),
+(“npm”, vec![“run”, “build”]),
+],
+AppKind::ViteReact => vec![
+(“npm”, vec![“ci”, “–prefer-offline”]),
+(“npm”, vec![“run”, “build”]),
+],
+AppKind::RustBin => vec![
+(“cargo”, vec![“build”, “–release”]),
+],
+AppKind::WasmPkg => vec![
+(“wasm-pack”, vec![“build”, “–target”, “web”, “–release”]),
+],
+AppKind::CloudflareWorker => vec![
+(“npm”, vec![“ci”, “–prefer-offline”]),
+(“wrangler”, vec![“deploy”, “–dry-run”]),
+],
+AppKind::TerraformModule => vec![
+(“terraform”, vec![“validate”]),
+(“terraform”, vec![“plan”, “-out=tfplan”]),
+],
+};
+
+```
+for (bin, args) in cmds {
+    let status = Command::new(bin)
+        .args(&args)
+        .current_dir(&app.path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .status()
+        .map_err(|e| format!("{bin} not found: {e}"))?;
+
+    if !status.success() {
+        return Err(format!("{bin} {} failed (exit {:?})", args.join(" "), status.code()));
+    }
+}
+Ok(())
+```
+
+}
+
+// ============================================================
+// Visual TUI dashboard — Deaf-first, no audio alerts
+// All status communicated visually with Unicode block chars
+// ============================================================
+pub fn render_dashboard(
+apps: &[App],
+statuses: &HashMap<String, BuildStatus>,
+start: Instant,
+) {
+// Clear screen + move to top
+print!(”\x1b[2J\x1b[H”);
+
+```
+// Header
+println!("\x1b[1m\x1b[32m┌─────────────────────────────────────────────────────┐\x1b[0m");
+println!("\x1b[1m\x1b[32m│  MBTQ BUILD ORCHESTRATOR  ·  deaf-first  ·  visual  │\x1b[0m");
+println!("\x1b[1m\x1b[32m└─────────────────────────────────────────────────────┘\x1b[0m");
+println!();
+
+let elapsed = start.elapsed().as_secs_f32();
+let total = apps.len();
+let done = statuses.values().filter(|s| matches!(s, BuildStatus::Success(_))).count();
+let failed = statuses.values().filter(|s| matches!(s, BuildStatus::Failed(_))).count();
+let running = statuses.values().filter(|s| matches!(s, BuildStatus::Running)).count();
+let pending = statuses.values().filter(|s| matches!(s, BuildStatus::Pending)).count();
+
+// Summary bar
+let bar_width = 40usize;
+let filled = if total > 0 { (done * bar_width) / total } else { 0 };
+let bar: String = "█".repeat(filled) + &"░".repeat(bar_width - filled);
+println!("  \x1b[32m{bar}\x1b[0m  {done}/{total}  \x1b[33m{elapsed:.1}s\x1b[0m");
+println!();
+
+// Status legend — visual only
+println!("  \x1b[32m■\x1b[0m done  \x1b[33m▶\x1b[0m running  \x1b[34m·\x1b[0m pending  \x1b[31m✗\x1b[0m failed  \x1b[90m–\x1b[0m skipped");
+println!();
+
+// Group by tier
+let mut tiers: Vec<u8> = apps.iter().map(|a| a.tier).collect();
+tiers.sort_unstable();
+tiers.dedup();
+
+for tier in tiers {
+    let tier_label = match tier {
+        0 => "CORE  (T0)",
+        1 => "GOV   (T1)",
+        2 => "APPS  (T2)",
+        _ => "OTHER",
+    };
+    println!("  \x1b[90m── {tier_label} ──────────────────────────────────\x1b[0m");
+
+    for app in apps.iter().filter(|a| a.tier == tier) {
+        let status = statuses.get(&app.name).unwrap_or(&BuildStatus::Pending);
+        let (icon, color) = match status {
+            BuildStatus::Success(d) => (format!("■  {:.1}s", d.as_secs_f32()), "\x1b[32m"),
+            BuildStatus::Running    => ("▶  ···".into(), "\x1b[33m"),
+            BuildStatus::Failed(e)  => (format!("✗  {}", &e[..e.len().min(28)]), "\x1b[31m"),
+            BuildStatus::Pending    => ("·  ---".into(), "\x1b[34m"),
+            BuildStatus::Skipped    => ("–  skip".into(), "\x1b[90m"),
+        };
+        let kind_color = app.kind.color_code();
+        let port = app.port.map(|p| format!(":{p}")).unwrap_or_default();
+        println!(
+            "  {color}{icon}\x1b[0m  {kind_color}[{:7}]\x1b[0m  {:<22} \x1b[90m{port}\x1b[0m",
+            app.kind.label(),
+            app.name,
+        );
+    }
+    println!();
+}
+
+// Footer stats
+println!("  \x1b[32m{done} built\x1b[0m  \x1b[33m{running} running\x1b[0m  \x1b[34m{pending} pending\x1b[0m  \x1b[31m{failed} failed\x1b[0m");
+```
+
+}
+
+// ============================================================
+// Parallel build runner with dependency ordering
+// ============================================================
+pub fn run_builds(apps: Vec<App>, parallel: bool) {
+let statuses: Arc<Mutex<HashMap<String, BuildStatus>>> = Arc::new(Mutex::new(
+apps.iter().map(|a| (a.name.clone(), BuildStatus::Pending)).collect()
+));
+let start = Instant::now();
+
+```
+if parallel {
+    let handles: Vec<_> = apps.iter().cloned().map(|app| {
+        let statuses = Arc::clone(&statuses);
+        thread::spawn(move || {
+            {
+                let mut s = statuses.lock().unwrap();
+                s.insert(app.name.clone(), BuildStatus::Running);
+            }
+            let t0 = Instant::now();
+            let result = build_app(&app);
+            let mut s = statuses.lock().unwrap();
+            s.insert(app.name.clone(), match result {
+                Ok(()) => BuildStatus::Success(t0.elapsed()),
+                Err(e) => BuildStatus::Failed(e),
+            });
+        })
+    }).collect();
+
+    // Render loop while building
+    loop {
+        {
+            let s = statuses.lock().unwrap();
+            render_dashboard(&apps, &s, start);
+            let all_done = s.values().all(|s| !matches!(s, BuildStatus::Pending | BuildStatus::Running));
+            if all_done { break; }
+        }
+        thread::sleep(Duration::from_millis(200));
+    }
+
+    for h in handles { let _ = h.join(); }
+} else {
+    // Sequential — respects dep ordering
+    for app in &apps {
+        {
+            let mut s = statuses.lock().unwrap();
+            s.insert(app.name.clone(), BuildStatus::Running);
+        }
+        render_dashboard(&apps, &statuses.lock().unwrap(), start);
+
+        let t0 = Instant::now();
+        let result = build_app(app);
+        let mut s = statuses.lock().unwrap();
+        s.insert(app.name.clone(), match result {
+            Ok(()) => BuildStatus::Success(t0.elapsed()),
+            Err(e) => BuildStatus::Failed(e),
+        });
+    }
+}
+
+// Final render
+render_dashboard(&apps, &statuses.lock().unwrap(), start);
+println!("\n  \x1b[1m\x1b[32mBUILD COMPLETE\x1b[0m  total: {:.2}s\n", start.elapsed().as_secs_f32());
+```
+
+}
+
+// ============================================================
+// CLI entry — subcommands
+// ============================================================
+fn main() {
+let args: Vec<String> = std::env::args().collect();
+let cmd = args.get(1).map(|s| s.as_str()).unwrap_or(“help”);
+
+```
+let all_apps = registry();
+
+match cmd {
+    "build" => {
+        let parallel = args.get(2).map(|s| s == "--parallel").unwrap_or(false);
+        let filter: Option<&str> = args.get(2).map(|s| s.as_str())
+            .filter(|s| !s.starts_with("--"));
+
+        let apps: Vec<App> = if let Some(f) = filter {
+            all_apps.into_iter().filter(|a| a.name.contains(f) || a.kind.label() == f).collect()
+        } else {
+            all_apps
+        };
+
+        println!("\x1b[1m\x1b[32m[mbtq]\x1b[0m building {} apps  parallel={parallel}", apps.len());
+        run_builds(apps, parallel);
+    }
+    "list" => {
+        println!("\x1b[1m[mbtq] app registry\x1b[0m\n");
+        for app in &all_apps {
+            let port = app.port.map(|p| format!(":{p}")).unwrap_or_default();
+            println!(
+                "  {}[{:7}]\x1b[0m  {:<24} \x1b[90m{}{}\x1b[0m",
+                app.kind.color_code(), app.kind.label(),
+                app.name, app.path, port
+            );
+        }
+    }
+    "check" => {
+        println!("\x1b[1m[mbtq] type-check all deno services\x1b[0m\n");
+        let deno_apps: Vec<App> = all_apps.into_iter()
+            .filter(|a| a.kind == AppKind::DenoService)
+            .collect();
+        for app in &deno_apps {
+            let ok = Command::new("deno")
+                .args(["check", "mod.ts"])
+                .current_dir(&app.path)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false);
+            let icon = if ok { "\x1b[32m■\x1b[0m" } else { "\x1b[31m✗\x1b[0m" };
+            println!("  {icon}  {}", app.name);
+        }
+    }
+    "wasm" => {
+        println!("\x1b[1m[mbtq] build all wasm packages\x1b[0m\n");
+        let wasm_apps: Vec<App> = all_apps.into_iter()
+            .filter(|a| a.kind == AppKind::WasmPkg)
+            .collect();
+        run_builds(wasm_apps, false);
+    }
+    "deploy" => {
+        println!("\x1b[1m[mbtq] deploy cloudflare workers\x1b[0m\n");
+        let worker_apps: Vec<App> = all_apps.into_iter()
+            .filter(|a| a.kind == AppKind::CloudflareWorker)
+            .collect();
+        run_builds(worker_apps, true);
+    }
+    "help" | _ => {
+        println!("\x1b[1m\x1b[32mmbtq-cli\x1b[0m  deaf-first build orchestrator\n");
+        println!("  \x1b[33mbuild\x1b[0m [filter] [--parallel]   build all or filtered apps");
+        println!("  \x1b[33mlist\x1b[0m                           list all registered apps");
+        println!("  \x1b[33mcheck\x1b[0m                          deno type-check all services");
+        println!("  \x1b[33mwasm\x1b[0m                           compile all wasm packages");
+        println!("  \x1b[33mdeploy\x1b[0m                         deploy cloudflare workers");
+        println!();
+        println!("  \x1b[90mall output visual-only — no audio gates\x1b[0m");
+    }
+}
+```
+
+}
